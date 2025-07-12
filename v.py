@@ -126,7 +126,7 @@ class Telegram:
         
         tasks = []
         for proxy in lines:
-            tasks.append(asyncio.create_task(self.request(proxy, proxy_type))
+            tasks.append(asyncio.create_task(self.request(proxy, proxy_type)))
         
         try:
             await asyncio.gather(*tasks)
@@ -282,7 +282,10 @@ def get_user_input():
     
     # Get concurrency
     concurrency = input("Enter concurrency level (default 200): ").strip()
-    if not concurrency.isdigit():
+    if not concurrency:
+        concurrency = 200
+    elif not concurrency.isdigit():
+        log("❌ Concurrency must be a number! Using default 200")
         concurrency = 200
     else:
         concurrency = int(concurrency)
