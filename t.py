@@ -37,8 +37,12 @@ class Telegram:
         self.post = post
         self.concurrency = concurrency
         self.semaphore = asyncio.Semaphore(concurrency)
-        self.ssl_context = ssl.create_default_context()
-        self.ssl_context.set_ciphers('TLS_AES_256_GCM_SHA384')
+        
+        # Enhanced SSL context configuration
+        self.ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+        self.ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
+        self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        
         self.target_views = target_views
         self.views_sent = 0
         self.lock = asyncio.Lock()
@@ -126,7 +130,7 @@ class Telegram:
         
         tasks = []
         for proxy in lines:
-            tasks.append(asyncio.create_task(self.request(proxy, proxy_type)))
+            tasks.append(asyncio.create_task(self.request(proxy, proxy_type))
         
         try:
             await asyncio.gather(*tasks)
@@ -192,11 +196,16 @@ class Auto:
     async def download_proxies(self):
         """Download proxies from API and save to proxy.txt"""
         try:
+            # Create SSL context for download
+            ssl_context = ssl.create_default_context()
+            ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
+            
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     self.download_url, 
                     timeout=aiohttp.ClientTimeout(total=15),
-                    headers={"User-Agent": UserAgent().random}
+                    headers={"User-Agent": UserAgent().random},
+                    ssl=ssl_context
                 ) as response:
                     if response.status == 200:
                         content = await response.text()
@@ -315,11 +324,11 @@ async def main():
         with open(user_input["proxy"], "r") as file:
             lines = file.read().splitlines()
         log(f"📋 Loaded {len(lines)} proxies from file {user_input['proxy']}")
-        await api.run_proxies_continuous(lines, "http")  # Type can be auto-detected
+        await api.run_proxies_continuous(lines, "http")
 
     elif user_input["mode"] == "rotate":
         log(f"🔄 Starting rotated mode with proxy: {user_input['proxy']}")
-        await api.run_rotated_continuous(user_input["proxy"], "http")  # Type can be auto-detected
+        await api.run_rotated_continuous(user_input["proxy"], "http")
 
     else:  # auto mode
         await api.run_auto_continuous()
