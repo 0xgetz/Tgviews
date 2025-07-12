@@ -1,7 +1,6 @@
 import aiohttp
 import asyncio
 from re import search, compile
-from argparse import ArgumentParser
 from datetime import datetime
 from fake_useragent import UserAgent
 from aiohttp_socks import ProxyConnector
@@ -125,11 +124,9 @@ class Telegram:
     async def run_proxies_continuous(self, lines: list, proxy_type: str):
         log(f"Starting continuous mode with {len(lines)} proxies of type {proxy_type}")
         
-        tasks = [
-            asyncio.create_task(
-                self.request(proxy, proxy_type)
-            for proxy in lines
-        ]
+        tasks = []
+        for proxy in lines:
+            tasks.append(asyncio.create_task(self.request(proxy, proxy_type))
         
         try:
             await asyncio.gather(*tasks)
@@ -235,31 +232,31 @@ class Auto:
 
 def get_user_input():
     """Get user input for channel URL and viewer count"""
-    print("\nTelegram View Booster Configuration")
-    print("-----------------------------------")
+    print("\n🚀 Telegram View Booster 🚀")
+    print("---------------------------")
     
     # Get channel URL
     channel_url = input("Enter Telegram channel URL (e.g., https://t.me/channel or @channel): ").strip()
     if not channel_url:
-        log("Channel URL is required!")
+        log("❌ Channel URL is required!")
         sys.exit(1)
         
     # Get post ID
     post_id = input("Enter post ID (number after the channel name in URL): ").strip()
     if not post_id.isdigit():
-        log("Post ID must be a number!")
+        log("❌ Post ID must be a number!")
         sys.exit(1)
     post_id = int(post_id)
     
     # Get target views
     target_views = input("Enter number of views to send (0 for unlimited): ").strip()
     if not target_views.isdigit():
-        log("View count must be a number!")
+        log("❌ View count must be a number!")
         sys.exit(1)
     target_views = int(target_views)
     
     # Get mode
-    print("\nAvailable modes:")
+    print("\n📡 Available modes:")
     print("1. Auto (download and use proxies automatically)")
     print("2. List (use proxies from a file)")
     print("3. Rotate (use a single proxy with rotation)")
@@ -278,7 +275,7 @@ def get_user_input():
     if mode == "list":
         proxy_file = input("Enter path to proxy file: ").strip()
         if not os.path.exists(proxy_file):
-            log("Proxy file not found!")
+            log("❌ Proxy file not found!")
             sys.exit(1)
     elif mode == "rotate":
         proxy_file = input("Enter proxy (user:pass@ip:port or ip:port): ").strip()
@@ -303,7 +300,7 @@ async def main():
     # Get user input
     user_input = get_user_input()
     
-    log(f"Starting Telegram View Booster with mode: {user_input['mode']}")
+    log(f"🚀 Starting Telegram View Booster with mode: {user_input['mode']}")
     api = Telegram(
         user_input["channel"],
         user_input["post"],
@@ -314,21 +311,21 @@ async def main():
     if user_input["mode"] == "list":
         with open(user_input["proxy"], "r") as file:
             lines = file.read().splitlines()
-        log(f"Loaded {len(lines)} proxies from file {user_input['proxy']}")
+        log(f"📋 Loaded {len(lines)} proxies from file {user_input['proxy']}")
         await api.run_proxies_continuous(lines, "http")  # Type can be auto-detected
 
     elif user_input["mode"] == "rotate":
-        log(f"Starting rotated mode with proxy: {user_input['proxy']}")
+        log(f"🔄 Starting rotated mode with proxy: {user_input['proxy']}")
         await api.run_rotated_continuous(user_input["proxy"], "http")  # Type can be auto-detected
 
     else:  # auto mode
         await api.run_auto_continuous()
 
 if __name__ == "__main__":
-    log("Program started")
+    log("📡 Program started")
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        log("Program terminated by user")
+        log("🛑 Program terminated by user")
     except Exception as e:
-        log(f"Unhandled exception: {str(e)}")
+        log(f"❌ Unhandled exception: {str(e)}")
