@@ -1,5 +1,5 @@
 ### 1. Simpan Kode Program
-Simpan kode lengkap di atas dalam file dengan nama `telegram_views.py`
+Simpan kode lengkap di atas dalam file dengan nama `v.py`
 
 ### 2. Instal Dependencies
 Buka terminal/command prompt dan jalankan perintah:
@@ -10,7 +10,7 @@ pip install aiohttp aiohttp_socks fake_useragent
 ### 3. Menjalankan Program
 Jalankan program dengan perintah:
 ```bash
-python telegram_views.py
+python v.py
 ```
 
 ### 4. Mengikuti Panduan Input
