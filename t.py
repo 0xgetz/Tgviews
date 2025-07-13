@@ -7,16 +7,13 @@ from aiohttp_socks import ProxyConnector
 import os
 import ssl
 import sys
+import socket
+import random
+import re
 
 # Regular expression for matching proxy patterns
 REGEX = compile(
-    r"(?:^|\D)?(("+ r"(?:[1-9]|[1-9]\d|1\d{2}|2[0-4]\d|25[0-5])"
-    + r"\." + r"(?:\d|[1-9]\d|1\d{2}|2[0-4]\d|25[0-5])"
-    + r"\." + r"(?:\d|[1-9]\d|1\d{2}|2[0-4]\d|25[0-5])"
-    + r"\." + r"(?:\d|[1-9]\d|1\d{2}|2[0-4]\d|25[0-5])"
-    + r"):" + (r"(?:\d|[1-9]\d{1,3}|[1-5]\d{4}|6[0-4]\d{3}"
-    + r"|65[0-4]\d{2}|655[0-2]\d|6553[0-5])")
-    + r")(?:\D|$)"
+    r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{1,5}$"
 )
 
 def log(message):
@@ -49,10 +46,16 @@ class Telegram:
         log(f"Initialized with channel: @{channel}, post: {post}, concurrency: {concurrency}, target views: {target_views}")
 
     async def request(self, proxy: str, proxy_type: str):
+        # Handle different proxy types
         proxy_url = f"{proxy_type}://{proxy}"
         try:
             async with self.semaphore:
-                connector = ProxyConnector.from_url(proxy_url, ssl=self.ssl_context)
+                # Create appropriate connector based on proxy type
+                if proxy_type in ["http", "https"]:
+                    connector = aiohttp.TCPConnector(ssl=self.ssl_context)
+                else:
+                    connector = ProxyConnector.from_url(proxy_url, ssl=self.ssl_context)
+                
                 jar = aiohttp.CookieJar(unsafe=True)
                 async with aiohttp.ClientSession(
                     cookie_jar=jar,
@@ -125,12 +128,11 @@ class Telegram:
         except Exception as e:
             log(f"ERROR: Proxy connection failed - {proxy_type}://{proxy} - {str(e)[:50]}...")
 
-    async def run_proxies_continuous(self, lines: list, proxy_type: str):
-        log(f"Starting continuous mode with {len(lines)} proxies of type {proxy_type}")
+    async def run_proxies_continuous(self, lines: list):
+        log(f"Starting continuous mode with {len(lines)} proxies")
         
         tasks = []
-        for proxy in lines:
-            # PERBAIKAN DI SINI: Tanda kurung yang benar
+        for proxy_type, proxy in lines:
             tasks.append(asyncio.create_task(self.request(proxy, proxy_type)))
         
         try:
@@ -187,7 +189,19 @@ class Telegram:
 class Auto:
     def __init__(self):
         self.proxies = []
-        self.download_url = "https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&proxy_format=protocolipport"
+        # Multiple proxy sources with different protocols
+        self.download_urls = [
+            "https://api.proxyscrape.com/v2/?request=displayproxies&protocol=all&timeout=10000&country=all&ssl=all&anonymity=all",
+            "https://www.proxy-list.download/api/v1/get?type=https",
+            "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks4.txt",
+            "https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt",
+            "https://proxylist.geonode.com/api/proxy-list?limit=500&page=1&sort_by=lastChecked&sort_type=desc&protocols=http,https,socks4,socks5"
+        ]
+        self.user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36"
+        ]
 
     async def init(self):
         self.proxies.clear()
@@ -195,48 +209,139 @@ class Auto:
         await self.load_proxies()
     
     async def download_proxies(self):
-        """Download proxies from API and save to proxy.txt"""
-        try:
-            # Create SSL context for download
-            ssl_context = ssl.create_default_context()
-            ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    self.download_url, 
-                    timeout=aiohttp.ClientTimeout(total=15),
-                    headers={"User-Agent": UserAgent().random},
-                    ssl=ssl_context
-                ) as response:
-                    if response.status == 200:
-                        content = await response.text()
-                        with open("proxy.txt", "w") as f:
-                            f.write(content)
-                        log(f"Downloaded {len(content.splitlines())} proxies to proxy.txt")
-                    else:
-                        log(f"Failed to download proxies. Status code: {response.status}")
-        except Exception as e:
-            log(f"Proxy download error: {str(e)}")
+        """Download proxies from multiple sources"""
+        downloaded = False
+        
+        # Shuffle URLs to distribute load
+        random.shuffle(self.download_urls)
+        
+        for url in self.download_urls:
+            try:
+                # Create SSL context for download
+                ssl_context = ssl.create_default_context()
+                ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
+                
+                # Select random user agent
+                headers = {
+                    "User-Agent": random.choice(self.user_agents),
+                    "Accept": "text/plain"
+                }
+                
+                async with aiohttp.ClientSession() as session:
+                    log(f"Trying proxy source: {url}")
+                    async with session.get(
+                        url, 
+                        timeout=aiohttp.ClientTimeout(total=15),
+                        headers=headers,
+                        ssl=ssl_context
+                    ) as response:
+                        if response.status == 200:
+                            content = await response.text()
+                            if content.strip():
+                                with open("proxy.txt", "w") as f:
+                                    f.write(content)
+                                log(f"Downloaded {len(content.splitlines())} proxies from {url}")
+                                downloaded = True
+                                break
+                            else:
+                                log("Received empty response, trying next source")
+                        else:
+                            log(f"Failed to download proxies. Status code: {response.status}")
+            except Exception as e:
+                log(f"Proxy download error from {url}: {str(e)[:100]}")
+        
+        if not downloaded:
+            log("❌ All proxy sources failed! Using existing proxy.txt if available")
 
     async def load_proxies(self):
-        """Load proxies exclusively from proxy.txt"""
+        """Load proxies exclusively from proxy.txt with protocol detection"""
         try:
             if not os.path.exists("proxy.txt"):
                 log("proxy.txt not found, skipping load")
                 return
                 
+            valid_proxies = []
+            invalid_count = 0
             with open("proxy.txt", "r") as f:
                 for line in f:
                     line = line.strip()
                     if not line:
                         continue
-                    parts = line.split(':', 2)
-                    if len(parts) == 3:
-                        protocol = parts[0].lower()
-                        proxy = f"{parts[1]}:{parts[2]}"
-                        if REGEX.fullmatch(proxy):
-                            self.proxies.append((protocol, proxy))
+                    
+                    # Extract protocol from line
+                    protocol = "http"  # default protocol
+                    if "://" in line:
+                        # Extract protocol prefix
+                        protocol_part, address = line.split("://", 1)
+                        protocol = protocol_part.lower()
+                    else:
+                        address = line
+                    
+                    # Handle different formats: ip:port or protocol:ip:port
+                    parts = address.split(':')
+                    
+                    if len(parts) == 2:
+                        # Format: ip:port
+                        ip, port = parts
+                    elif len(parts) == 3:
+                        # Format: protocol:ip:port (but protocol already extracted)
+                        ip, port = parts[0], parts[2]
+                    else:
+                        invalid_count += 1
+                        continue
+                    
+                    # Normalize protocol names
+                    if protocol in ["socks4", "socks4a"]:
+                        protocol = "socks4"
+                    elif protocol in ["socks5", "socks5h"]:
+                        protocol = "socks5"
+                    elif protocol in ["http", "https"]:
+                        # Keep as is
+                        pass
+                    else:
+                        # Skip unsupported protocols
+                        invalid_count += 1
+                        continue
+                    
+                    # Validate IP address
+                    try:
+                        socket.inet_aton(ip)
+                    except socket.error:
+                        invalid_count += 1
+                        continue
+                    
+                    # Validate port
+                    try:
+                        port_num = int(port)
+                        if not (1 <= port_num <= 65535):
+                            invalid_count += 1
+                            continue
+                    except ValueError:
+                        invalid_count += 1
+                        continue
+                    
+                    # Reconstruct proxy string
+                    proxy_str = f"{ip}:{port}"
+                    
+                    # Check with regex
+                    if REGEX.match(proxy_str):
+                        valid_proxies.append((protocol, proxy_str))
+                    else:
+                        invalid_count += 1
+            
+            self.proxies = valid_proxies
             log(f"Loaded {len(self.proxies)} valid proxies")
+            if invalid_count > 0:
+                log(f"Skipped {invalid_count} invalid proxies")
+                
+            # Log protocol distribution
+            protocol_count = {}
+            for protocol, _ in self.proxies:
+                protocol_count[protocol] = protocol_count.get(protocol, 0) + 1
+            
+            for protocol, count in protocol_count.items():
+                log(f" - {protocol.upper()}: {count} proxies")
+                
         except Exception as e:
             log(f"Error loading proxy.txt: {str(e)}")
 
@@ -288,7 +393,10 @@ def get_user_input():
             log("❌ Proxy file not found!")
             sys.exit(1)
     elif mode == "rotate":
-        proxy_file = input("Enter proxy (user:pass@ip:port or ip:port): ").strip()
+        proxy_file = input("Enter proxy (protocol://user:pass@ip:port or ip:port): ").strip()
+        # Default to http if no protocol specified
+        if "://" not in proxy_file:
+            proxy_file = "http://" + proxy_file
     
     # Get concurrency
     concurrency = input("Enter concurrency level (default 200): ").strip()
@@ -322,14 +430,41 @@ async def main():
     )
     
     if user_input["mode"] == "list":
+        # Process proxy file with protocol detection
+        proxies = []
         with open(user_input["proxy"], "r") as file:
-            lines = file.read().splitlines()
-        log(f"📋 Loaded {len(lines)} proxies from file {user_input['proxy']}")
-        await api.run_proxies_continuous(lines, "http")
+            for line in file:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Extract protocol from line
+                protocol = "http"  # default protocol
+                if "://" in line:
+                    protocol_part, address = line.split("://", 1)
+                    protocol = protocol_part.lower()
+                else:
+                    address = line
+                
+                # Validate address format
+                if REGEX.match(address):
+                    proxies.append((protocol, address))
+                else:
+                    log(f"Skipping invalid proxy: {line}")
+        
+        log(f"📋 Loaded {len(proxies)} proxies from file {user_input['proxy']}")
+        await api.run_proxies_continuous(proxies)
 
     elif user_input["mode"] == "rotate":
-        log(f"🔄 Starting rotated mode with proxy: {user_input['proxy']}")
-        await api.run_rotated_continuous(user_input["proxy"], "http")
+        # Extract protocol and address from input
+        if "://" in user_input["proxy"]:
+            protocol, address = user_input["proxy"].split("://", 1)
+        else:
+            protocol = "http"
+            address = user_input["proxy"]
+        
+        log(f"🔄 Starting rotated mode with proxy: {protocol}://{address}")
+        await api.run_rotated_continuous(address, protocol)
 
     else:  # auto mode
         await api.run_auto_continuous()
