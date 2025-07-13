@@ -130,8 +130,8 @@ class Telegram:
         
         tasks = []
         for proxy in lines:
-            # PERBAIKAN DI SINI: Menambahkan tanda kurung penutup yang hilang
-            tasks.append(asyncio.create_task(self.request(proxy, proxy_type))
+            # PERBAIKAN DI SINI: Tanda kurung yang benar
+            tasks.append(asyncio.create_task(self.request(proxy, proxy_type)))
         
         try:
             await asyncio.gather(*tasks)
