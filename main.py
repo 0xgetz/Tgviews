@@ -11,9 +11,12 @@ import socket
 import random
 import re
 
-# Regular expression for matching proxy patterns
+# Fix 2: UserAgent instantiated once at module level, reused across all coroutines
+UA = UserAgent()
+
+# Fix 3: REGEX updated to also accept user:pass@ip:port authenticated proxy format
 REGEX = compile(
-    r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{1,5}$"
+    r"^(?:[^@]+@)?(?:[0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{1,5}$"
 )
 
 def log(message):
@@ -29,17 +32,17 @@ class Telegram:
             channel = channel.split("/")[-1].replace('@', '')
         elif channel.startswith("@"):
             channel = channel[1:]
-            
+
         self.channel = channel
         self.post = post
         self.concurrency = concurrency
         self.semaphore = asyncio.Semaphore(concurrency)
-        
+
         # Enhanced SSL context configuration
         self.ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
         self.ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
         self.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
-        
+
         self.target_views = target_views
         self.views_sent = 0
         self.lock = asyncio.Lock()
@@ -55,7 +58,7 @@ class Telegram:
                     connector = aiohttp.TCPConnector(ssl=self.ssl_context)
                 else:
                     connector = ProxyConnector.from_url(proxy_url, ssl=self.ssl_context)
-                
+
                 jar = aiohttp.CookieJar(unsafe=True)
                 async with aiohttp.ClientSession(
                     cookie_jar=jar,
@@ -63,14 +66,15 @@ class Telegram:
                     headers={"Connection": "keep-alive"},
                     trust_env=True
                 ) as session:
-                    user_agent = UserAgent().random
+                    # Fix 2: reuse module-level UA instance instead of creating per-request
+                    user_agent = UA.random
                     headers = {
                         "referer": f"https://t.me/{self.channel}/{self.post}",
                         "user-agent": user_agent,
                         "Pragma": "no-cache",
                         "Cache-Control": "no-store"
                     }
-                    
+
                     # First request to get cookies
                     embed_url = f"https://t.me/{self.channel}/{self.post}?embed=1&mode=tme"
                     async with session.get(
@@ -79,19 +83,19 @@ class Telegram:
                         timeout=aiohttp.ClientTimeout(total=10),
                         allow_redirects=True
                     ) as embed_response:
-                        
+
                         # Check for stel_ssid cookie
                         if not jar.filter_cookies(embed_response.url).get("stel_ssid"):
                             log("ERROR: No stel_ssid cookie received")
                             return
-                            
+
                         # Extract view token
                         embed_text = await embed_response.text()
                         views_token = search('data-view="([^"]+)"', embed_text)
                         if not views_token:
                             log("ERROR: No view token found")
                             return
-                            
+
                     # Second request to register view
                     view_url = "https://t.me/v/?views=" + views_token.group(1)
                     view_headers = {
@@ -100,19 +104,19 @@ class Telegram:
                         "x-requested-with": "XMLHttpRequest",
                         "Content-Type": "application/x-www-form-urlencoded"
                     }
-                    
+
                     async with session.post(
                         view_url,
                         headers=view_headers,
                         timeout=aiohttp.ClientTimeout(total=10)
                     ) as view_response:
-                        
+
                         view_text = await view_response.text()
                         if view_text == "true" and view_response.status == 200:
                             async with self.lock:
                                 self.views_sent += 1
                                 log(f"SUCCESS: View registered ({self.views_sent}/{self.target_views})")
-                                
+
                                 # Check if target reached
                                 if self.target_views > 0 and self.views_sent >= self.target_views:
                                     log(f"TARGET REACHED: {self.target_views} views sent!")
@@ -130,11 +134,11 @@ class Telegram:
 
     async def run_proxies_continuous(self, lines: list):
         log(f"Starting continuous mode with {len(lines)} proxies")
-        
+
         tasks = []
         for proxy_type, proxy in lines:
             tasks.append(asyncio.create_task(self.request(proxy, proxy_type)))
-        
+
         try:
             await asyncio.gather(*tasks)
         except asyncio.CancelledError:
@@ -147,44 +151,94 @@ class Telegram:
         while True:
             if self.target_views > 0 and self.views_sent >= self.target_views:
                 return
-                
-            await self.request(proxy, proxy_type)
-            await asyncio.sleep(1)  # Add small delay between requests
 
+            await self.request(proxy, proxy_type)
+            await asyncio.sleep(1)  # Small delay between requests
+
+    # Fix 4: Cancellation race fixed — collect ALL tasks before awaiting any,
+    # so a mid-loop cancellation cannot leave orphaned coroutines.
     async def run_auto_continuous(self):
         log("Starting continuous auto mode")
         while True:
             if self.target_views > 0 and self.views_sent >= self.target_views:
                 log("Target views reached. Exiting.")
                 return
-                
+
             auto = Auto()
             await auto.init()
-            
+
             if not auto.proxies:
                 log("No proxies found, retrying in 60 seconds...")
                 await asyncio.sleep(60)
                 continue
-                
+
             log(f"Auto mode loaded {len(auto.proxies)} proxies from proxy.txt")
-            
-            tasks = []
-            for proxy_type, proxy in auto.proxies:
-                if self.target_views > 0 and self.views_sent >= self.target_views:
-                    break
-                    
-                task = asyncio.create_task(self.continuous_request(proxy, proxy_type))
-                tasks.append(task)
-                await asyncio.sleep(0.1)  # Stagger task creation
-            
+
+            # Build the full task list first, then await — prevents orphans on cancellation
+            tasks = [
+                asyncio.create_task(self.continuous_request(proxy, proxy_type))
+                for proxy_type, proxy in auto.proxies
+                if not (self.target_views > 0 and self.views_sent >= self.target_views)
+            ]
+
             try:
                 await asyncio.gather(*tasks)
             except asyncio.CancelledError:
                 log("Auto mode cancelled")
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
                 return
             except Exception as e:
                 log(f"Error in auto mode: {str(e)}")
                 log("Rescanning proxies...")
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Fix 1: Implement run_rotated_continuous — rotates through the supplied proxy
+    # list continuously, moving to the next proxy after each attempt or failure.
+    async def run_rotated_continuous(self, proxies: list, default_protocol: str = "http"):
+        """
+        Rotate through a pre-supplied proxy list continuously.
+        Each entry in proxies is either a (protocol, address) tuple or a raw string.
+        After each attempt (success or failure) the next proxy in the list is used.
+        Stops when target_views is reached (if set).
+        """
+        if not proxies:
+            log("ERROR: No proxies supplied for rotate mode")
+            return
+
+        log(f"Starting rotate mode with {len(proxies)} proxies")
+        index = 0
+
+        while True:
+            if self.target_views > 0 and self.views_sent >= self.target_views:
+                log("Target views reached. Exiting rotate mode.")
+                return
+
+            entry = proxies[index % len(proxies)]
+            if isinstance(entry, tuple):
+                proxy_type, proxy_addr = entry
+            else:
+                # Raw string — parse protocol if present
+                if "://" in entry:
+                    proxy_type, proxy_addr = entry.split("://", 1)
+                else:
+                    proxy_type = default_protocol
+                    proxy_addr = entry
+
+            try:
+                await self.request(proxy_addr, proxy_type)
+            except asyncio.CancelledError:
+                log("Rotate mode cancelled")
+                return
+            except Exception as e:
+                log(f"Rotate: proxy {proxy_type}://{proxy_addr} failed — {str(e)[:60]}")
+
+            index += 1
+            await asyncio.sleep(0.5)  # Small delay between rotations
+
 
 class Auto:
     def __init__(self):
@@ -207,30 +261,30 @@ class Auto:
         self.proxies.clear()
         await self.download_proxies()
         await self.load_proxies()
-    
+
     async def download_proxies(self):
         """Download proxies from multiple sources"""
         downloaded = False
-        
+
         # Shuffle URLs to distribute load
         random.shuffle(self.download_urls)
-        
+
         for url in self.download_urls:
             try:
                 # Create SSL context for download
                 ssl_context = ssl.create_default_context()
                 ssl_context.set_ciphers('DEFAULT@SECLEVEL=1')
-                
+
                 # Select random user agent
                 headers = {
                     "User-Agent": random.choice(self.user_agents),
                     "Accept": "text/plain"
                 }
-                
+
                 async with aiohttp.ClientSession() as session:
                     log(f"Trying proxy source: {url}")
                     async with session.get(
-                        url, 
+                        url,
                         timeout=aiohttp.ClientTimeout(total=15),
                         headers=headers,
                         ssl=ssl_context
@@ -249,9 +303,9 @@ class Auto:
                             log(f"Failed to download proxies. Status code: {response.status}")
             except Exception as e:
                 log(f"Proxy download error from {url}: {str(e)[:100]}")
-        
+
         if not downloaded:
-            log("❌ All proxy sources failed! Using existing proxy.txt if available")
+            log("All proxy sources failed! Using existing proxy.txt if available")
 
     async def load_proxies(self):
         """Load proxies exclusively from proxy.txt with protocol detection"""
@@ -259,7 +313,7 @@ class Auto:
             if not os.path.exists("proxy.txt"):
                 log("proxy.txt not found, skipping load")
                 return
-                
+
             valid_proxies = []
             invalid_count = 0
             with open("proxy.txt", "r") as f:
@@ -267,19 +321,18 @@ class Auto:
                     line = line.strip()
                     if not line:
                         continue
-                    
+
                     # Extract protocol from line
                     protocol = "http"  # default protocol
                     if "://" in line:
-                        # Extract protocol prefix
                         protocol_part, address = line.split("://", 1)
                         protocol = protocol_part.lower()
                     else:
                         address = line
-                    
+
                     # Handle different formats: ip:port or protocol:ip:port
                     parts = address.split(':')
-                    
+
                     if len(parts) == 2:
                         # Format: ip:port
                         ip, port = parts
@@ -289,27 +342,25 @@ class Auto:
                     else:
                         invalid_count += 1
                         continue
-                    
+
                     # Normalize protocol names
                     if protocol in ["socks4", "socks4a"]:
                         protocol = "socks4"
                     elif protocol in ["socks5", "socks5h"]:
                         protocol = "socks5"
                     elif protocol in ["http", "https"]:
-                        # Keep as is
                         pass
                     else:
-                        # Skip unsupported protocols
                         invalid_count += 1
                         continue
-                    
+
                     # Validate IP address
                     try:
                         socket.inet_aton(ip)
                     except socket.error:
                         invalid_count += 1
                         continue
-                    
+
                     # Validate port
                     try:
                         port_num = int(port)
@@ -319,161 +370,179 @@ class Auto:
                     except ValueError:
                         invalid_count += 1
                         continue
-                    
+
                     # Reconstruct proxy string
                     proxy_str = f"{ip}:{port}"
-                    
-                    # Check with regex
+
+                    # Check with regex (plain ip:port at this point, always valid)
                     if REGEX.match(proxy_str):
                         valid_proxies.append((protocol, proxy_str))
                     else:
                         invalid_count += 1
-            
+
             self.proxies = valid_proxies
             log(f"Loaded {len(self.proxies)} valid proxies")
             if invalid_count > 0:
                 log(f"Skipped {invalid_count} invalid proxies")
-                
+
             # Log protocol distribution
             protocol_count = {}
             for protocol, _ in self.proxies:
                 protocol_count[protocol] = protocol_count.get(protocol, 0) + 1
-            
+
             for protocol, count in protocol_count.items():
                 log(f" - {protocol.upper()}: {count} proxies")
-                
+
         except Exception as e:
             log(f"Error loading proxy.txt: {str(e)}")
 
+
 def get_user_input():
     """Get user input for channel URL and viewer count"""
-    print("\n🚀 Telegram View Booster 🚀")
-    print("---------------------------")
-    
+    print("\nTelegram View Booster")
+    print("---------------------")
+
     # Get channel URL
     channel_url = input("Enter Telegram channel URL (e.g., https://t.me/channel or @channel): ").strip()
     if not channel_url:
-        log("❌ Channel URL is required!")
+        log("Channel URL is required!")
         sys.exit(1)
-        
+
     # Get post ID
     post_id = input("Enter post ID (number after the channel name in URL): ").strip()
     if not post_id.isdigit():
-        log("❌ Post ID must be a number!")
+        log("Post ID must be a number!")
         sys.exit(1)
     post_id = int(post_id)
-    
+
     # Get target views
     target_views = input("Enter number of views to send (0 for unlimited): ").strip()
     if not target_views.isdigit():
-        log("❌ View count must be a number!")
+        log("View count must be a number!")
         sys.exit(1)
     target_views = int(target_views)
-    
+
     # Get mode
-    print("\n📡 Available modes:")
-    print("1. Auto (download and use proxies automatically)")
-    print("2. List (use proxies from a file)")
-    print("3. Rotate (use a single proxy with rotation)")
+    print("\nAvailable modes:")
+    print("1. Auto   - Download proxies automatically and run continuously")
+    print("2. List   - Load proxies from a local file and send views")
+    print("3. Rotate - Use a supplied proxy list, rotating to the next proxy after each attempt")
     mode_choice = input("Select mode (1-3): ").strip()
-    
+
     mode_map = {
         "1": "auto",
         "2": "list",
         "3": "rotate"
     }
-    
+
     mode = mode_map.get(mode_choice, "auto")
-    
-    # Get proxy file if needed
-    proxy_file = ""
+
+    # Get proxy file / list if needed
+    proxy_input = ""
     if mode == "list":
-        proxy_file = input("Enter path to proxy file: ").strip()
-        if not os.path.exists(proxy_file):
-            log("❌ Proxy file not found!")
+        proxy_input = input("Enter path to proxy file: ").strip()
+        if not os.path.exists(proxy_input):
+            log("Proxy file not found!")
             sys.exit(1)
     elif mode == "rotate":
-        proxy_file = input("Enter proxy (protocol://user:pass@ip:port or ip:port): ").strip()
-        # Default to http if no protocol specified
-        if "://" not in proxy_file:
-            proxy_file = "http://" + proxy_file
-    
+        proxy_input = input(
+            "Enter path to proxy file for rotation\n"
+            "  (one proxy per line, format: [protocol://][user:pass@]ip:port): "
+        ).strip()
+        if not os.path.exists(proxy_input):
+            log("Proxy file not found!")
+            sys.exit(1)
+
     # Get concurrency
     concurrency = input("Enter concurrency level (default 200): ").strip()
     if not concurrency:
         concurrency = 200
     elif not concurrency.isdigit():
-        log("❌ Concurrency must be a number! Using default 200")
+        log("Concurrency must be a number! Using default 200")
         concurrency = 200
     else:
         concurrency = int(concurrency)
-    
+
     return {
         "channel": channel_url,
         "post": post_id,
         "mode": mode,
-        "proxy": proxy_file,
+        "proxy": proxy_input,
         "concurrency": concurrency,
         "target_views": target_views
     }
 
+
+def parse_proxy_file(path: str) -> list:
+    """Parse a proxy file into a list of (protocol, address) tuples.
+    Accepts lines in any of these formats:
+      ip:port
+      protocol://ip:port
+      user:pass@ip:port
+      protocol://user:pass@ip:port
+    """
+    proxies = []
+    with open(path, "r") as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            protocol = "http"
+            address = line
+
+            if "://" in line:
+                protocol, address = line.split("://", 1)
+                protocol = protocol.lower()
+
+            # Normalize protocol
+            if protocol in ("socks4", "socks4a"):
+                protocol = "socks4"
+            elif protocol in ("socks5", "socks5h"):
+                protocol = "socks5"
+            elif protocol not in ("http", "https"):
+                protocol = "http"
+
+            # Fix 3: validate with updated regex that accepts user:pass@ip:port
+            if REGEX.match(address):
+                proxies.append((protocol, address))
+            else:
+                log(f"Skipping invalid proxy: {line}")
+
+    return proxies
+
+
 async def main():
-    # Get user input
     user_input = get_user_input()
-    
-    log(f"🚀 Starting Telegram View Booster with mode: {user_input['mode']}")
+
+    log(f"Starting Telegram View Booster with mode: {user_input['mode']}")
     api = Telegram(
         user_input["channel"],
         user_input["post"],
         user_input["concurrency"],
         user_input["target_views"]
     )
-    
+
     if user_input["mode"] == "list":
-        # Process proxy file with protocol detection
-        proxies = []
-        with open(user_input["proxy"], "r") as file:
-            for line in file:
-                line = line.strip()
-                if not line:
-                    continue
-                
-                # Extract protocol from line
-                protocol = "http"  # default protocol
-                if "://" in line:
-                    protocol_part, address = line.split("://", 1)
-                    protocol = protocol_part.lower()
-                else:
-                    address = line
-                
-                # Validate address format
-                if REGEX.match(address):
-                    proxies.append((protocol, address))
-                else:
-                    log(f"Skipping invalid proxy: {line}")
-        
-        log(f"📋 Loaded {len(proxies)} proxies from file {user_input['proxy']}")
+        proxies = parse_proxy_file(user_input["proxy"])
+        log(f"Loaded {len(proxies)} proxies from file {user_input['proxy']}")
         await api.run_proxies_continuous(proxies)
 
     elif user_input["mode"] == "rotate":
-        # Extract protocol and address from input
-        if "://" in user_input["proxy"]:
-            protocol, address = user_input["proxy"].split("://", 1)
-        else:
-            protocol = "http"
-            address = user_input["proxy"]
-        
-        log(f"🔄 Starting rotated mode with proxy: {protocol}://{address}")
-        await api.run_rotated_continuous(address, protocol)
+        # Fix 1: pass full proxy list to run_rotated_continuous
+        proxies = parse_proxy_file(user_input["proxy"])
+        log(f"Loaded {len(proxies)} proxies for rotate mode from {user_input['proxy']}")
+        await api.run_rotated_continuous(proxies)
 
     else:  # auto mode
         await api.run_auto_continuous()
 
+
 if __name__ == "__main__":
-    log("📡 Program started")
+    log("Program started")
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        log("🛑 Program terminated by user")
+        log("Program terminated by user")
     except Exception as e:
-        log(f"❌ Unhandled exception: {str(e)}")
+        log(f"Unhandled exception: {str(e)}")

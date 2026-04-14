@@ -1,117 +1,121 @@
-### 1. Simpan Kode Program
-Simpan kode lengkap di atas dalam file dengan nama `v.py`
+# Telegram View Booster
 
-### 2. Instal Dependencies
-Buka terminal/command prompt dan jalankan perintah:
+Boost Telegram post view counts by routing requests through proxies using async Python.
+
+---
+
+## 1. Installation
+
 ```bash
-pip install aiohttp aiohttp_socks fake_useragent
+pip install -r requirements.txt
 ```
 
-### 3. Menjalankan Program
-Jalankan program dengan perintah:
+---
+
+## 2. Running the Program
+
 ```bash
-python v.py
+python main.py
 ```
 
-### 4. Mengikuti Panduan Input
-Program akan meminta input berikut:
+---
 
-1. **Telegram channel URL**:  
-   Masukkan URL lengkap channel atau username (contoh: `https://t.me/my_channel` atau `@my_channel`)
+## 3. Input Guide
 
-2. **Post ID**:  
-   Masukkan ID post (angka setelah nama channel di URL)  
-   Contoh: untuk URL `https://t.me/my_channel/123`, masukkan `123`
+The program will prompt for the following:
 
-3. **Number of views**:  
-   Masukkan jumlah viewer yang ingin dikirim (0 untuk tanpa batas)
+1. **Telegram channel URL**
+   Enter the full channel URL or username.
+   Examples: `https://t.me/my_channel`, `@my_channel`, `my_channel`
 
-4. **Select mode**:  
-   Pilih mode operasi:
-   - `1` Auto (download proxy otomatis)
-   - `2` List (gunakan proxy dari file)
-   - `3` Rotate (gunakan satu proxy dengan rotasi)
+2. **Post ID**
+   The numeric ID after the channel name in the post URL.
+   Example: for `https://t.me/my_channel/123` enter `123`
 
-5. **Proxy input** (jika memilih mode 2 atau 3):
-   - Untuk mode List: masukkan path file proxy (contoh: `proxies.txt`)
-   - Untuk mode Rotate: masukkan proxy (contoh: `user:pass@ip:port` atau `ip:port`)
+3. **Number of views**
+   How many views to send. Enter `0` for unlimited.
 
-6. **Concurrency level**:  
-   Masukkan jumlah request bersamaan (default 200)
+4. **Mode** (see below for details)
 
-### Contoh Penggunaan
+5. **Proxy input** (modes 2 and 3 only)
 
-**Mode Auto (unduh proxy otomatis):**
+6. **Concurrency level**
+   Number of simultaneous requests (default: 200).
+
+---
+
+## 4. Modes
+
+### Mode 1 — Auto
+Downloads fresh proxy lists automatically from multiple public sources, then sends views continuously. Rescans proxies after each cycle.
+
 ```
-Telegram View Booster Configuration
------------------------------------
-Enter Telegram channel URL: https://t.me/my_awesome_channel
-Enter post ID: 12345
-Enter number of views to send: 1000
-
-Available modes:
-1. Auto (download and use proxies automatically)
-2. List (use proxies from a file)
-3. Rotate (use a single proxy with rotation)
 Select mode (1-3): 1
-Enter concurrency level (default 200): 300
-```
-
-**Mode List (gunakan proxy dari file):**
-```
-Telegram View Booster Configuration
------------------------------------
-Enter Telegram channel URL: @my_channel
-Enter post ID: 6789
-Enter number of views to send: 500
-
-Available modes:
-1. Auto (download and use proxies automatically)
-2. List (use proxies from a file)
-3. Rotate (use a single proxy with rotation)
-Select mode (1-3): 2
-Enter path to proxy file: my_proxies.txt
 Enter concurrency level (default 200): 200
 ```
 
-**Mode Rotate (satu proxy dengan rotasi):**
+### Mode 2 — List
+Loads proxies from a local file you provide. Each line should be one proxy in any of these formats:
+- `ip:port`
+- `protocol://ip:port`
+- `user:pass@ip:port`
+- `protocol://user:pass@ip:port`
+
+Supported protocols: `http`, `https`, `socks4`, `socks5`
+
 ```
-Telegram View Booster Configuration
------------------------------------
-Enter Telegram channel URL: my_channel
-Enter post ID: 1011
-Enter number of views to send: 0
+Select mode (1-3): 2
+Enter path to proxy file: proxies.txt
+Enter concurrency level (default 200): 200
+```
+
+### Mode 3 — Rotate
+Uses a proxy file you supply, rotating to the next proxy after each request attempt (success or failure). Useful when you want deterministic control over which proxies are used and in what order.
+
+Proxy file format is the same as Mode 2 (one proxy per line).
+
+```
+Select mode (1-3): 3
+Enter path to proxy file for rotation: proxies.txt
+Enter concurrency level (default 200): 200
+```
+
+---
+
+## 5. Example Session
+
+```
+Telegram View Booster
+---------------------
+Enter Telegram channel URL (e.g., https://t.me/channel or @channel): https://t.me/my_channel
+Enter post ID (number after the channel name in URL): 42
+Enter number of views to send (0 for unlimited): 500
 
 Available modes:
-1. Auto (download and use proxies automatically)
-2. List (use proxies from a file)
-3. Rotate (use a single proxy with rotation)
-Select mode (1-3): 3
-Enter proxy (user:pass@ip:port or ip:port): 123.45.67.89:8080
-Enter concurrency level (default 200): 150
+1. Auto   - Download proxies automatically and run continuously
+2. List   - Load proxies from a local file and send views
+3. Rotate - Use a supplied proxy list, rotating to the next proxy after each attempt
+Select mode (1-3): 1
+Enter concurrency level (default 200): 200
 ```
 
-### 5. Memantau Proses
-Setelah program berjalan, Anda akan melihat log real-time:
-- Status download proxy
-- Jumlah proxy yang berhasil di-load
-- Status pengiriman view (sukses/gagal)
-- Progress jumlah view yang telah dikirim
+---
 
-### 6. Menghentikan Program
-Tekan `Ctrl + C` di terminal untuk menghentikan program kapan saja.
+## 6. Monitoring
 
-### Catatan Penting:
-1. Pastikan koneksi internet stabil
-2. Untuk mode Auto, program akan otomatis:
-   - Mendownload proxy dari api.proxyscrape.com
-   - Menyimpannya di `proxy.txt`
-   - Menggunakan proxy tersebut untuk mengirim view
-3. File `proxy.txt` akan terus diupdate setiap siklus
-4. Program akan berhenti otomatis jika target view tercapai (jika diatur)
-5. Semakin tinggi concurrency, semakin cepat proses tapi membutuhkan lebih banyak resource
+While running you will see real-time logs:
+- Proxy download status (Auto mode)
+- Number of valid proxies loaded
+- Per-request success / failure with running view count
+- Target-reached notification (if a target was set)
 
-Untuk masalah:
-- Jika ada error SSL, pastikan sistem Anda memiliki sertifikat SSL terbaru
-- Jika proxy tidak bekerja, coba gunakan proxy dari sumber lain
-- Pastikan URL channel dan post ID benar
+Press `Ctrl+C` at any time to stop.
+
+---
+
+## 7. Notes
+
+- In Auto mode `proxy.txt` is overwritten on every cycle with freshly downloaded proxies.
+- SSL errors: ensure your system has up-to-date CA certificates.
+- Higher concurrency is faster but uses more memory and file descriptors.
+- If all proxy sources fail in Auto mode, the program retries after 60 seconds using any existing `proxy.txt`.
